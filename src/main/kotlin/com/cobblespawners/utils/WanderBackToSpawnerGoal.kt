@@ -1,14 +1,14 @@
-package com.cobblespawners.utils
+package com.cobblespawners.utils;
 
-import net.minecraft.entity.ai.goal.Goal
-import net.minecraft.entity.mob.MobEntity
-import net.minecraft.util.math.BlockPos
-import net.minecraft.util.math.Vec3d
-import net.minecraft.world.Heightmap
-import java.util.EnumSet
-import kotlin.math.cos
-import kotlin.math.sin
-import kotlin.math.sqrt
+import net.minecraft.entity.ai.goal.Goal;
+import net.minecraft.entity.mob.MobEntity;
+import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.Heightmap;
+import java.util.EnumSet;
+import kotlin.math.cos;
+import kotlin.math.sin;
+import kotlin.math.sqrt;
 
 class WanderBackToSpawnerGoal(
     private val entity: MobEntity,
@@ -18,68 +18,53 @@ class WanderBackToSpawnerGoal(
     private val tickDelay: Int = 10
 ) : Goal() {
 
-
     private val allowedRadius: Double = settings.wanderDistance.toDouble()
     private val allowedRadiusSquared = allowedRadius * allowedRadius
     private var targetPos: Vec3d? = null
     private var ticksSinceCheck = entity.random.nextInt(tickDelay)
 
-
     init {
-
         controls = EnumSet.of(Control.MOVE)
     }
 
-
     override fun canStart(): Boolean {
-
         if (!settings.enabled) return false
 
         if (--ticksSinceCheck > 0) return false
         ticksSinceCheck = tickDelay
 
-        val distanceSq = entity.pos.squaredDistanceTo(spawnerCenter)
-
-        return distanceSq > allowedRadiusSquared
+        // Check if the entity is outside the allowed radius
+        return entity.pos.squaredDistanceTo(spawnerCenter) > allowedRadiusSquared
     }
 
-
     override fun start() {
-
+        // Always stop current navigation before starting a new one
         entity.navigation.stop()
 
-
+        // Determine the target position
         targetPos = if (settings.wanderType.equals("RADIUS", ignoreCase = true)) {
-
-            findRandomTargetInRadius()
+            // This is the optimized function call
+            findRandomTargetInRadius() ?: spawnerCenter // Fallback to center if no point is found
         } else {
-
             spawnerCenter
         }
 
-
+        // --- OPTIMIZATION: Pathfinding is now only called ONCE here ---
         if (targetPos != null) {
-
             val path = entity.navigation.findPathTo(targetPos!!.x, targetPos!!.y, targetPos!!.z, 0)
-            if (path != null && path.reachesTarget()) {
+            if (path != null) {
                 entity.navigation.startMovingAlong(path, speed)
-            } else {
-
-                entity.navigation.startMovingTo(targetPos!!.x, targetPos!!.y, targetPos!!.z, speed)
-
             }
-        } else {
-
-            entity.navigation.startMovingTo(spawnerCenter.x, spawnerCenter.y, spawnerCenter.z, speed)
-
         }
     }
 
-
+    /**
+     * OPTIMIZED: Finds a suitable random target position without performing expensive pathfinding.
+     * It now focuses on finding a valid block on the ground within the radius.
+     */
     private fun findRandomTargetInRadius(): Vec3d? {
-        for (i in 0..9) {
+        for (i in 0..9) { // Try up to 10 times to find a valid spot
             val randomAngle = entity.random.nextDouble() * 2.0 * Math.PI
-
             val randomDist = sqrt(entity.random.nextDouble()) * allowedRadius
 
             val offsetX = cos(randomAngle) * randomDist
@@ -88,46 +73,28 @@ class WanderBackToSpawnerGoal(
             val potentialX = spawnerCenter.x + offsetX
             val potentialZ = spawnerCenter.z + offsetZ
 
+            // Find the highest solid block at the random coordinates
+            val targetY = entity.world.getTopY(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, potentialX.toInt(), potentialZ.toInt())
+            val potentialTargetPos = BlockPos(potentialX.toInt(), targetY, potentialZ.toInt())
 
-            val targetBlockPos = BlockPos.ofFloored(potentialX, entity.y, potentialZ)
-            val targetY = entity.world.getTopY(Heightmap.Type.MOTION_BLOCKING_NO_LEAVES, targetBlockPos.x, targetBlockPos.z)
-
-            val potentialTarget = Vec3d(potentialX, targetY.toDouble(), potentialZ)
-
-
-            if (potentialTarget.squaredDistanceTo(spawnerCenter) <= allowedRadiusSquared) {
-
-                if (entity.navigation.findPathTo(potentialTarget.x, potentialTarget.y, potentialTarget.z, 0) != null) {
-                    return potentialTarget
-                }
+            // Check if this position is within the allowed radius
+            if (Vec3d.ofCenter(potentialTargetPos).squaredDistanceTo(spawnerCenter) <= allowedRadiusSquared) {
+                // --- CRITICAL CHANGE: We no longer call findPathTo() here. ---
+                // We just return the valid position. The 'start' method will handle pathfinding.
+                return Vec3d.ofBottomCenter(potentialTargetPos)
             }
         }
-
+        // Return null if no suitable point was found after 10 attempts
         return null
     }
 
-
-    /**
-     * Continue the goal until the entity is back within radius AND navigation finishes.
-     * Note: We check against the originally calculated target position's completion.
-     */
     override fun shouldContinue(): Boolean {
-
-        if (!settings.enabled) return false
-
-
-        val isInsideRadius = entity.pos.squaredDistanceTo(spawnerCenter) <= allowedRadiusSquared
-        val navigationIdle = entity.navigation.isIdle
-
-        return !navigationIdle
-
+        // Stop if the goal is disabled or the entity's navigation is idle (reached destination or stuck)
+        return settings.enabled && !entity.navigation.isIdle
     }
 
-    /**
-     * Stop the goal and halt navigation.
-     */
     override fun stop() {
-
+        // Clear the target position and stop navigation to prevent conflicts
         targetPos = null
         entity.navigation.stop()
     }

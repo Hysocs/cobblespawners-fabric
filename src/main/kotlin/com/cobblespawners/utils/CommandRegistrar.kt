@@ -231,9 +231,6 @@ object CommandRegistrar {
             }
 
 
-
-
-
             subcommand("killspawned", permission = "CobbleSpawners.Killspawned") {
                 executes { ctx ->
 
