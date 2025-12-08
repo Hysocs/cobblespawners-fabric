@@ -5,18 +5,26 @@ import com.cobblemon.mod.common.pokemon.Species
 import com.everlastingutils.config.ConfigData
 import com.everlastingutils.config.ConfigManager
 import com.everlastingutils.config.ConfigMetadata
+import com.everlastingutils.config.WatcherSettings
 import com.everlastingutils.utils.LogDebug
+import com.google.gson.Gson
 import com.google.gson.GsonBuilder
+import com.google.gson.JsonParser
+import com.google.gson.stream.JsonReader
 import kotlinx.coroutines.runBlocking
 import net.minecraft.util.math.BlockPos
 import org.slf4j.LoggerFactory
+import java.io.File
+import java.io.StringReader
+import java.nio.file.Paths
+
 import java.util.concurrent.ConcurrentHashMap
+import java.util.function.Predicate
 import kotlin.math.roundToInt
 import kotlin.reflect.KClass
 import kotlin.reflect.KMutableProperty
 import kotlin.reflect.full.createInstance
 import kotlin.reflect.full.memberProperties
-
 
 data class GlobalConfig(
     var debugEnabled: Boolean = false,
@@ -26,6 +34,87 @@ data class GlobalConfig(
     var showAspectsInGui: Boolean = true
 )
 
+data class CobbleSpawnersConfigData(
+    override val version: String = "2.1.1",
+    override val configId: String = "cobblespawners",
+    var globalConfig: GlobalConfig = GlobalConfig()
+) : ConfigData {
+    val spawners: MutableList<SpawnerData>
+        get() = SpawnerListProxy
+}
+
+private object SpawnerListProxy : AbstractMutableList<SpawnerData>() {
+    override val size: Int get() = CobbleSpawnersConfig.spawners.size
+
+    override fun get(index: Int): SpawnerData = CobbleSpawnersConfig.spawners.values.elementAt(index)
+
+    override fun add(element: SpawnerData): Boolean {
+        CobbleSpawnersConfig.spawners[element.spawnerPos] = element
+        return true
+    }
+
+    override fun add(index: Int, element: SpawnerData) {
+        add(element)
+    }
+
+    override fun removeAt(index: Int): SpawnerData {
+        val item = get(index)
+        CobbleSpawnersConfig.spawners.remove(item.spawnerPos)
+        return item
+    }
+
+    override fun set(index: Int, element: SpawnerData): SpawnerData {
+        val old = get(index)
+        if (old.spawnerPos != element.spawnerPos) {
+            CobbleSpawnersConfig.spawners.remove(old.spawnerPos)
+        }
+        CobbleSpawnersConfig.spawners[element.spawnerPos] = element
+        return old
+    }
+
+    override fun remove(element: SpawnerData): Boolean {
+        return CobbleSpawnersConfig.spawners.remove(element.spawnerPos) != null
+    }
+
+    override fun removeIf(filter: Predicate<in SpawnerData>): Boolean {
+        var removed = false
+        val keys = CobbleSpawnersConfig.spawners.keys.toList()
+        for (pos in keys) {
+            val data = CobbleSpawnersConfig.spawners[pos]
+            if (data != null && filter.test(data)) {
+                if (CobbleSpawnersConfig.spawners.remove(pos) != null) {
+                    removed = true
+                }
+            }
+        }
+        return removed
+    }
+
+    override fun iterator(): MutableIterator<SpawnerData> {
+        return CobbleSpawnersConfig.spawners.values.iterator()
+    }
+}
+
+data class SpawnerData(
+    override val version: String = "2.1.1",
+    override val configId: String = "cobblespawners",
+    val spawnerPos: BlockPos = BlockPos.ORIGIN,
+    var spawnerName: String = "default_spawner",
+    var selectedPokemon: MutableList<PokemonSpawnEntry> = mutableListOf(),
+    val dimension: String = "minecraft:overworld",
+    var spawnTimerTicks: Long = 200,
+    var spawnRadius: SpawnRadius? = SpawnRadius(),
+    var spawnLimit: Int = 4,
+    var spawnAmountPerSpawn: Int = 1,
+    var visible: Boolean = true,
+    var lowLevelEntitySpawn: Boolean = false,
+    var wanderingSettings: WanderingSettings? = WanderingSettings(),
+    var forceChunkLoading: Boolean = true,
+    var chunkLoadRadius: Int = 1,
+    var requirePlayerInRange: Boolean = true,
+    var playerActivationRange: Int = 30
+) : ConfigData
+
 data class CaptureSettings(
     var isCatchable: Boolean = true,
     var restrictCaptureToLimitedBalls: Boolean = false,
@@ -34,28 +123,18 @@ data class CaptureSettings(
 
 data class IVSettings(
     var allowCustomIvs: Boolean = false,
-    var minIVHp: Int = 0,
-    var maxIVHp: Int = 31,
-    var minIVAttack: Int = 0,
-    var maxIVAttack: Int = 31,
-    var minIVDefense: Int = 0,
-    var maxIVDefense: Int = 31,
-    var minIVSpecialAttack: Int = 0,
-    var maxIVSpecialAttack: Int = 31,
-    var minIVSpecialDefense: Int = 0,
-    var maxIVSpecialDefense: Int = 31,
-    var minIVSpeed: Int = 0,
-    var maxIVSpeed: Int = 31
+    var minIVHp: Int = 0, var maxIVHp: Int = 31,
+    var minIVAttack: Int = 0, var maxIVAttack: Int = 31,
+    var minIVDefense: Int = 0, var maxIVDefense: Int = 31,
+    var minIVSpecialAttack: Int = 0, var maxIVSpecialAttack: Int = 31,
+    var minIVSpecialDefense: Int = 0, var maxIVSpecialDefense: Int = 31,
+    var minIVSpeed: Int = 0, var maxIVSpeed: Int = 31
 )
 
 data class EVSettings(
     var allowCustomEvsOnDefeat: Boolean = false,
-    var evHp: Int = 0,
-    var evAttack: Int = 0,
-    var evDefense: Int = 0,
-    var evSpecialAttack: Int = 0,
-    var evSpecialDefense: Int = 0,
-    var evSpeed: Int = 0
+    var evHp: Int = 0, var evAttack: Int = 0, var evDefense: Int = 0,
+    var evSpecialAttack: Int = 0, var evSpecialDefense: Int = 0, var evSpeed: Int = 0
 )
 
 data class SpawnSettings(
@@ -72,10 +151,7 @@ data class SizeSettings(
 
 data class HeldItemsOnSpawn(
     var allowHeldItemsOnSpawn: Boolean = false,
-    var itemsWithChance: Map<String, Double> = mapOf(
-        "minecraft:cobblestone" to 0.1,
-        "cobblemon:pokeball" to 100.0
-    )
+    var itemsWithChance: Map<String, Double> = mapOf("minecraft:cobblestone" to 0.1, "cobblemon:pokeball" to 100.0)
 )
 
 data class PokemonSpawnEntry(
@@ -99,179 +175,274 @@ data class MovesSettings(
     val allowCustomInitialMoves: Boolean = false,
     val selectedMoves: List<LeveledMove> = emptyList()
 ) {
-    val initialMoves: List<String>
-        get() = selectedMoves.map { it.moveId }
-    val initialMovesWithLevels: List<LeveledMove>
-        get() = selectedMoves
+    val initialMoves: List<String> get() = selectedMoves.map { it.moveId }
+    val initialMovesWithLevels: List<LeveledMove> get() = selectedMoves
 }
 
-data class LeveledMove(
-    val level: Int,
-    val moveId: String,
-    val forced: Boolean = false
-)
-
-enum class SpawnChanceType {
-    COMPETITIVE,
-    INDEPENDENT
-}
-
-data class SpawnRadius(
-    var width: Int = 4,
-    var height: Int = 4
-)
-
-data class WanderingSettings(
-    var enabled: Boolean = true,
-    var wanderType: String = "RADIUS",
-    var wanderDistance: Int = 6
-)
-
-data class SpawnerData(
-    val spawnerPos: BlockPos,
-    var spawnerName: String = "default_spawner",
-    var selectedPokemon: MutableList<PokemonSpawnEntry> = mutableListOf(),
-    val dimension: String = "minecraft:overworld",
-    var spawnTimerTicks: Long = 200,
-    var spawnRadius: SpawnRadius? = SpawnRadius(),
-    var spawnLimit: Int = 4,
-    var spawnAmountPerSpawn: Int = 1,
-    var visible: Boolean = true,
-    var lowLevelEntitySpawn: Boolean = false,
-    var wanderingSettings: WanderingSettings? = WanderingSettings(),
-    var forceChunkLoading: Boolean = true,
-    var chunkLoadRadius: Int = 1,
-    var requirePlayerInRange: Boolean = true,
-    var playerActivationRange: Int = 30
-)
-
-data class CobbleSpawnersConfigData(
-    override val version: String = "2.1.0",
-    override val configId: String = "cobblespawners",
-    var globalConfig: GlobalConfig = GlobalConfig(),
-    var spawners: MutableList<SpawnerData> = mutableListOf()
-) : ConfigData
-
+data class LeveledMove(val level: Int, val moveId: String, val forced: Boolean = false)
+enum class SpawnChanceType { COMPETITIVE, INDEPENDENT }
+data class SpawnRadius(var width: Int = 4, var height: Int = 4)
+data class WanderingSettings(var enabled: Boolean = true, var wanderType: String = "RADIUS", var wanderDistance: Int = 6)
 
 object CobbleSpawnersConfig {
     private val logger = LoggerFactory.getLogger("CobbleSpawnersConfig")
-    private const val CURRENT_VERSION = "2.1.0"
+    private const val CURRENT_VERSION = "2.1.1"
     private const val MOD_ID = "cobblespawners"
+
+    private val mainConfigDir = File("config/cobblespawners")
+    private val spawnersDir = File(mainConfigDir, "spawners")
 
     private lateinit var configManager: ConfigManager<CobbleSpawnersConfigData>
     private var isInitialized = false
 
-    private val configMetadata = ConfigMetadata(
-        headerComments = listOf(
-            "CobbleSpawners Configuration File",
-            "",
-            "Global Config: Contains debug settings, culling options, and GUI display preferences.",
-            "Spawner Data: Defines each spawner's position, spawn timing, radius, and visibility options.",
-            "Pokemon Spawn Entry: Holds the settings for each Pokémon, including spawn chances, levels, sizes, and additional spawn details.",
-            "",
-            "DO NOT MODIFY 'version' or 'configId' as these are used for configuration management."
-        ),
-        footerComments = listOf("End of CobbleSpawners Configuration"),
-        sectionComments = mapOf(
-            "" to "Configuration root",
-            "globalConfig" to "Global configuration options for CobbleSpawners.",
-            "spawners" to "List of spawner data entries.",
-            "version" to "WARNING: Do not edit this value.",
-            "configId" to "WARNING: Do not edit this value.",
-            "spawners.wanderingSettings" to "Wandering settings for the spawner, including type and distance."
-        ),
-        includeTimestamp = true,
-        includeVersion = true
-    )
+    private val gson: Gson = GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create()
+    private val spawnerFileMap = ConcurrentHashMap<BlockPos, String>()
 
-    val config: CobbleSpawnersConfigData
-        get() = configManager.getCurrentConfig()
-
-    val spawners: ConcurrentHashMap<BlockPos, SpawnerData> = ConcurrentHashMap()
     val lastSpawnTicks: ConcurrentHashMap<BlockPos, Long> = ConcurrentHashMap()
 
-    private val gson = GsonBuilder().setPrettyPrinting().create()
+    val config: CobbleSpawnersConfigData
+        get() = if (::configManager.isInitialized) configManager.getCurrentConfig() else CobbleSpawnersConfigData()
+
+    val spawners: MutableMap<BlockPos, SpawnerData> = object : java.util.AbstractMap<BlockPos, SpawnerData>() {
+        override val entries: MutableSet<MutableMap.MutableEntry<BlockPos, SpawnerData>>
+            get() = spawnerFileMap.keys.mapNotNull { pos ->
+                val data = get(pos) ?: return@mapNotNull null
+                java.util.AbstractMap.SimpleEntry(pos, data)
+            }.toMutableSet()
+
+        override fun get(key: BlockPos): SpawnerData? {
+            val fileName = spawnerFileMap[key] ?: return null
+            return configManager.getSecondaryConfig(fileName)
+        }
+
+        override fun put(key: BlockPos, value: SpawnerData): SpawnerData? {
+            registerOrUpdateSpawner(key, value)
+            return value
+        }
+
+        override fun remove(key: BlockPos): SpawnerData? {
+            val data = get(key)
+            if (removeSpawnerFile(key)) return data
+            return null
+        }
+
+        override fun containsKey(key: BlockPos): Boolean = spawnerFileMap.containsKey(key)
+        override val size: Int get() = spawnerFileMap.size
+    }
 
     private fun logDebug(message: String) {
         LogDebug.debug(message, MOD_ID)
     }
 
-    private fun updateDebugState() {
-        val debugEnabled = config.globalConfig.debugEnabled
-        LogDebug.setDebugEnabledForMod(MOD_ID, debugEnabled)
-        LogDebug.debug("Debug state updated to $debugEnabled", MOD_ID)
-    }
-
     fun initializeAndLoad() {
         if (isInitialized) return
         LogDebug.init(MOD_ID, false)
+
+        mainConfigDir.mkdirs()
+        spawnersDir.mkdirs()
+
+        performMigrationIfNeeded()
+
         configManager = ConfigManager(
             currentVersion = CURRENT_VERSION,
             defaultConfig = CobbleSpawnersConfigData(),
             configClass = CobbleSpawnersConfigData::class,
-            metadata = configMetadata
+            configDir = Paths.get("config"),
+            metadata = ConfigMetadata(
+                headerComments = listOf("CobbleSpawners Main Configuration"),
+                watcherSettings = WatcherSettings(enabled = true, autoSaveEnabled = true)
+            )
         )
-        runBlocking { configManager.reloadConfig() }
+
         updateDebugState()
-        loadSpawnerDataInMemory()
+
+        runBlocking {
+            loadSpawnersFromDisk()
+        }
+
         isInitialized = true
     }
 
     fun reloadBlocking() {
-        runBlocking { configManager.reloadConfig() }
+        runBlocking {
+            if (::configManager.isInitialized) {
+                configManager.reloadConfig()
+                loadSpawnersFromDisk()
+            }
+        }
         updateDebugState()
-        loadSpawnerDataInMemory()
     }
 
-    /** Sets null fields in nested data classes to their default values using reflection. */
+    private fun performMigrationIfNeeded() {
+        val configFile = File(mainConfigDir, "config.jsonc")
+        if (!configFile.exists()) {
+            return
+        }
+
+        try {
+            val content = configFile.readText()
+            // First, check if migration is needed before doing anything else.
+            if (!content.contains("\"spawners\"")) {
+                return
+            }
+
+            logger.info("Legacy 'spawners' list found. Attempting migration to multi-file format...")
+
+            try {
+                configFile.copyTo(File(mainConfigDir, "config.jsonc.backup"), overwrite = true)
+                logger.info("Successfully created a backup of config.jsonc before migration.")
+            } catch (e: Exception) {
+                logger.error("Failed to create backup before migration. Aborting to protect data.", e)
+                return
+            }
+
+            val reader = JsonReader(StringReader(content))
+            reader.isLenient = true
+
+            val jsonObject = JsonParser.parseReader(reader).asJsonObject
+
+            if (jsonObject.has("spawners") && jsonObject.get("spawners").isJsonArray) {
+                val spawnersArray = jsonObject.getAsJsonArray("spawners")
+
+                var allSuccess = true
+                var migratedCount = 0
+
+                if (spawnersArray.size() > 0) {
+                    spawnersArray.forEach { element ->
+                        try {
+                            val spawnerObj = element.asJsonObject
+                            val data = gson.fromJson(spawnerObj, SpawnerData::class.java)
+                            val fileName = getFileNameForPos(data.spawnerPos)
+                            val file = File(spawnersDir, fileName.substringAfter("spawners/"))
+
+                            file.parentFile.mkdirs()
+                            val jsonOutput = gson.toJson(data)
+                            file.writeText(jsonOutput)
+
+                            migratedCount++
+                        } catch (e: Exception) {
+                            logger.error("Failed to migrate a specific spawner entry. It will be preserved in config.jsonc", e)
+                            allSuccess = false
+                        }
+                    }
+
+                    // SAFETY: Only modify the main config if ALL spawners migrated successfully
+                    if (allSuccess) {
+                        jsonObject.remove("spawners")
+                        val mainOutput = gson.toJson(jsonObject)
+                        configFile.writeText(mainOutput)
+                        logger.info("Migration successful. $migratedCount spawners moved to /spawners/ folder.")
+                    } else {
+                        logger.warn("Migration completed with ERRORS. $migratedCount succeeded, but some failed.")
+                        logger.warn("The 'spawners' list was NOT removed from config.jsonc to prevent data loss.")
+                        logger.warn("Please check config.jsonc.backup and the logs.")
+                    }
+                } else {
+                    // If the spawners array is empty, just remove it from the config.
+                    jsonObject.remove("spawners")
+                    val mainOutput = gson.toJson(jsonObject)
+                    configFile.writeText(mainOutput)
+                    logger.info("Found an empty legacy 'spawners' list. It has been removed from config.jsonc.")
+                }
+            }
+        } catch (e: Exception) {
+            logger.error("Critical error during configuration migration. No files were modified.", e)
+        }
+    }
+
+    private suspend fun loadSpawnersFromDisk() {
+        spawnerFileMap.clear()
+
+        val files = spawnersDir.listFiles { _, name -> name.endsWith(".json") || name.endsWith(".jsonc") }
+        if (files.isNullOrEmpty()) return
+
+        files.forEach { file ->
+            try {
+                val relativeName = "spawners/${file.name}"
+                configManager.registerSecondaryConfig(
+                    fileName = relativeName,
+                    configClass = SpawnerData::class,
+                    defaultConfig = SpawnerData(),
+                    fileMetadata = ConfigMetadata(watcherSettings = WatcherSettings(enabled = true, autoSaveEnabled = true))
+                )
+
+                val loadedData = configManager.getSecondaryConfig<SpawnerData>(relativeName)
+                if (loadedData != null) {
+                    spawnerFileMap[loadedData.spawnerPos] = relativeName
+                    applyDefaultsToSpawner(loadedData)
+                }
+            } catch (e: Exception) {
+                logger.error("Failed to load spawner file: ${file.name}", e)
+            }
+        }
+    }
+
+    private fun registerOrUpdateSpawner(pos: BlockPos, data: SpawnerData) {
+        val fileName = spawnerFileMap[pos] ?: getFileNameForPos(pos)
+        spawnerFileMap[pos] = fileName
+
+        runBlocking {
+            configManager.registerSecondaryConfig(
+                fileName = fileName,
+                configClass = SpawnerData::class,
+                defaultConfig = data,
+                fileMetadata = ConfigMetadata(watcherSettings = WatcherSettings(enabled = true, autoSaveEnabled = true))
+            )
+        }
+    }
+
+    private fun getFileNameForPos(pos: BlockPos): String {
+        return "spawners/spawner_${pos.x}_${pos.y}_${pos.z}.jsonc"
+    }
+
+    private fun removeSpawnerFile(pos: BlockPos): Boolean {
+        val fileName = spawnerFileMap.remove(pos) ?: return false
+        val file = File(mainConfigDir, fileName)
+        if (file.exists()) {
+            file.delete()
+            return true
+        }
+        return false
+    }
+
+    private fun updateDebugState() {
+        val debugEnabled = config.globalConfig.debugEnabled
+        LogDebug.setDebugEnabledForMod(MOD_ID, debugEnabled)
+    }
+
+    private fun applyDefaultsToSpawner(spawner: SpawnerData) {
+        if (spawner.spawnTimerTicks <= 0) spawner.spawnTimerTicks = 200
+        if (spawner.spawnRadius == null) spawner.spawnRadius = SpawnRadius()
+        if (spawner.wanderingSettings == null) spawner.wanderingSettings = WanderingSettings()
+        spawner.spawnRadius?.let { setNullFieldsToDefaultsForNested(it, SpawnRadius::class) }
+        spawner.wanderingSettings?.let { setNullFieldsToDefaultsForNested(it, WanderingSettings::class) }
+    }
+
     private fun <T : Any> setNullFieldsToDefaultsForNested(instance: T, clazz: KClass<T>) {
         val defaultInstance = clazz.createInstance()
         clazz.memberProperties.forEach { property ->
             if (property is KMutableProperty<*>) {
                 val currentValue = property.getter.call(instance)
                 if (currentValue == null) {
-                    val defaultValue = property.getter.call(defaultInstance)
-                    property.setter.call(instance, defaultValue)
-                } else if (currentValue::class.isData) {
-                    @Suppress("UNCHECKED_CAST")
-                    setNullFieldsToDefaultsForNested(currentValue, currentValue::class as KClass<Any>)
+                    property.setter.call(instance, property.getter.call(defaultInstance))
                 }
             }
         }
     }
 
-    private fun loadSpawnerDataInMemory() {
-        spawners.clear()
-        lastSpawnTicks.clear()
-        for (spawner in config.spawners) {
-
-            if (spawner.spawnTimerTicks <= 0) spawner.spawnTimerTicks = 200
-            if (spawner.spawnRadius == null) spawner.spawnRadius = SpawnRadius()
-            if (spawner.spawnLimit <= 0) spawner.spawnLimit = 4
-            if (spawner.spawnAmountPerSpawn <= 0) spawner.spawnAmountPerSpawn = 1
-            if (spawner.wanderingSettings == null) spawner.wanderingSettings = WanderingSettings()
-
-
-            spawner.spawnRadius?.let { setNullFieldsToDefaultsForNested(it, SpawnRadius::class) }
-            spawner.wanderingSettings?.let { setNullFieldsToDefaultsForNested(it, WanderingSettings::class) }
-
-            spawners[spawner.spawnerPos] = spawner
-        }
-        logDebug("Loaded ${spawners.size} spawners into memory with defaults applied.")
-    }
-
     fun saveSpawnerData() {
-        config.spawners = spawners.values.toMutableList()
-        logDebug("Spawner data saved.")
-        saveConfigBlocking()
+        runBlocking {
+            configManager.saveConfig(config)
+        }
     }
 
-    private fun roundToOneDecimal(value: Float): Float {
-        return (value * 10).roundToInt() / 10f
+    fun saveConfigBlocking() {
+        runBlocking {
+            configManager.saveConfig(config)
+        }
     }
 
     fun updateLastSpawnTick(spawnerPos: BlockPos, tick: Long) {
-        logDebug("Updated last spawn tick for spawner at $spawnerPos")
         lastSpawnTicks[spawnerPos] = tick
     }
 
@@ -289,16 +460,7 @@ object CobbleSpawnersConfig {
             dimension = dimension
         )
         spawners[spawnerPos] = spawnerData
-        saveSpawnerData()
-        logDebug("Added spawner at $spawnerPos.")
         return true
-    }
-
-    fun updateSpawner(spawnerPos: BlockPos, update: (SpawnerData) -> Unit): SpawnerData? {
-        val spawnerData = spawners[spawnerPos] ?: return null
-        update(spawnerData)
-        saveSpawnerData()
-        return spawnerData
     }
 
     fun getSpawner(spawnerPos: BlockPos): SpawnerData? {
@@ -306,16 +468,18 @@ object CobbleSpawnersConfig {
     }
 
     fun removeSpawner(spawnerPos: BlockPos): Boolean {
-        val removed = spawners.remove(spawnerPos) != null
-        if (removed) {
+        if (spawners.remove(spawnerPos) != null) {
             lastSpawnTicks.remove(spawnerPos)
-            saveSpawnerData()
             logDebug("Removed spawner at $spawnerPos.")
             return true
-        } else {
-            logDebug("Spawner not found at $spawnerPos.")
-            return false
         }
+        return false
+    }
+
+    fun updateSpawner(spawnerPos: BlockPos, update: (SpawnerData) -> Unit): SpawnerData? {
+        val spawnerData = spawners[spawnerPos] ?: return null
+        update(spawnerData)
+        return spawnerData
     }
 
     fun updatePokemonSpawnEntry(
@@ -325,18 +489,21 @@ object CobbleSpawnersConfig {
         additionalAspects: Set<String> = emptySet(),
         update: (PokemonSpawnEntry) -> Unit
     ): PokemonSpawnEntry? {
-        val spawnerData = spawners[spawnerPos] ?: return null
-        val selectedEntry = spawnerData.selectedPokemon.find {
-            it.pokemonName.equals(pokemonName, ignoreCase = true) &&
-                    (it.formName?.equals(formName, ignoreCase = true) ?: (formName == null)) &&
-                    it.aspects.map { a -> a.lowercase() }.toSet() == additionalAspects.map { a -> a.lowercase() }.toSet()
-        } ?: return null
-
-        update(selectedEntry)
-        selectedEntry.sizeSettings.minSize = roundToOneDecimal(selectedEntry.sizeSettings.minSize)
-        selectedEntry.sizeSettings.maxSize = roundToOneDecimal(selectedEntry.sizeSettings.maxSize)
-        saveSpawnerData()
-        return selectedEntry
+        var result: PokemonSpawnEntry? = null
+        updateSpawner(spawnerPos) { spawner ->
+            val selectedEntry = spawner.selectedPokemon.find {
+                it.pokemonName.equals(pokemonName, ignoreCase = true) &&
+                        (it.formName?.equals(formName, ignoreCase = true) ?: (formName == null)) &&
+                        it.aspects.map { a -> a.lowercase() }.toSet() == additionalAspects.map { a -> a.lowercase() }.toSet()
+            }
+            if (selectedEntry != null) {
+                update(selectedEntry)
+                selectedEntry.sizeSettings.minSize = roundToOneDecimal(selectedEntry.sizeSettings.minSize)
+                selectedEntry.sizeSettings.maxSize = roundToOneDecimal(selectedEntry.sizeSettings.maxSize)
+                result = selectedEntry
+            }
+        }
+        return result
     }
 
     fun getPokemonSpawnEntry(
@@ -354,35 +521,29 @@ object CobbleSpawnersConfig {
     }
 
     fun addPokemonSpawnEntry(spawnerPos: BlockPos, entry: PokemonSpawnEntry): Boolean {
-        val spawnerData = spawners[spawnerPos] ?: return false
-        if (spawnerData.selectedPokemon.any {
-                it.pokemonName.equals(entry.pokemonName, ignoreCase = true) &&
-                        (it.formName?.equals(entry.formName, ignoreCase = true) ?: (entry.formName == null))
+        var success = false
+        updateSpawner(spawnerPos) { spawner ->
+            if (!spawner.selectedPokemon.any {
+                    it.pokemonName.equals(entry.pokemonName, ignoreCase = true) &&
+                            (it.formName?.equals(entry.formName, ignoreCase = true) ?: (entry.formName == null))
+                }) {
+                spawner.selectedPokemon.add(entry)
+                success = true
             }
-        ) {
-            logDebug("Pokémon '${entry.pokemonName}' already selected.")
-            return false
         }
-        spawnerData.selectedPokemon.add(entry)
-        saveSpawnerData()
-        logDebug("Added Pokémon '${entry.pokemonName}' to spawner at $spawnerPos.")
-        return true
+        return success
     }
 
     fun removePokemonSpawnEntry(spawnerPos: BlockPos, pokemonName: String, formName: String?): Boolean {
-        val spawnerData = spawners[spawnerPos] ?: return false
-        val removed = spawnerData.selectedPokemon.removeIf {
-            it.pokemonName.equals(pokemonName, ignoreCase = true) &&
-                    (it.formName?.equals(formName, ignoreCase = true) ?: (formName == null))
+        var success = false
+        updateSpawner(spawnerPos) { spawner ->
+            val removed = spawner.selectedPokemon.removeIf {
+                it.pokemonName.equals(pokemonName, ignoreCase = true) &&
+                        (it.formName?.equals(formName, ignoreCase = true) ?: (formName == null))
+            }
+            if (removed) success = true
         }
-        if (removed) {
-            saveSpawnerData()
-            logDebug("Removed Pokémon '$pokemonName' from spawner at $spawnerPos.")
-            return true
-        } else {
-            logDebug("Pokémon '$pokemonName' not found in spawner at $spawnerPos.")
-            return false
-        }
+        return success
     }
 
     fun addDefaultPokemonToSpawner(
@@ -391,21 +552,19 @@ object CobbleSpawnersConfig {
         formName: String?,
         aspects: Set<String> = emptySet()
     ): Boolean {
-        val spawnerData = spawners[spawnerPos] ?: return false
-        if (spawnerData.selectedPokemon.any {
-                it.pokemonName.equals(pokemonName, ignoreCase = true) &&
-                        (it.formName?.equals(formName, ignoreCase = true) ?: (formName == null)) &&
-                        it.aspects.map { a -> a.lowercase() }.toSet() == aspects.map { a -> a.lowercase() }.toSet()
-            }) {
-            logDebug("Pokémon with specified aspects already exists in spawner")
-            return false
+        var success = false
+        updateSpawner(spawnerPos) { spawner ->
+            if (!spawner.selectedPokemon.any {
+                    it.pokemonName.equals(pokemonName, ignoreCase = true) &&
+                            (it.formName?.equals(formName, ignoreCase = true) ?: (formName == null)) &&
+                            it.aspects.map { a -> a.lowercase() }.toSet() == aspects.map { a -> a.lowercase() }.toSet()
+                }) {
+                val newEntry = createDefaultPokemonEntry(pokemonName, formName, aspects)
+                spawner.selectedPokemon.add(newEntry)
+                success = true
+            }
         }
-        val newEntry = createDefaultPokemonEntry(pokemonName, formName, aspects)
-        val updatedPokemonList = spawnerData.selectedPokemon.toMutableList().apply { add(newEntry) }
-        spawners[spawnerPos] = spawnerData.copy(selectedPokemon = updatedPokemonList)
-        config.spawners.find { it.spawnerPos == spawnerPos }?.selectedPokemon = updatedPokemonList
-        saveSpawnerData()
-        return true
+        return success
     }
 
     fun removeAndSavePokemonFromSpawner(
@@ -414,60 +573,29 @@ object CobbleSpawnersConfig {
         formName: String?,
         aspects: Set<String> = emptySet()
     ): Boolean {
-        val spawnerData = spawners[spawnerPos] ?: return false
-        val updatedPokemonList = spawnerData.selectedPokemon.toMutableList()
-        val removed = updatedPokemonList.removeIf {
-            it.pokemonName.equals(pokemonName, ignoreCase = true) &&
-                    (it.formName?.equals(formName, ignoreCase = true) ?: (formName == null)) &&
-                    it.aspects.map { a -> a.lowercase() }.toSet() == aspects.map { a -> a.lowercase() }.toSet()
+        var success = false
+        updateSpawner(spawnerPos) { spawner ->
+            val removed = spawner.selectedPokemon.removeIf {
+                it.pokemonName.equals(pokemonName, ignoreCase = true) &&
+                        (it.formName?.equals(formName, ignoreCase = true) ?: (formName == null)) &&
+                        it.aspects.map { a -> a.lowercase() }.toSet() == aspects.map { a -> a.lowercase() }.toSet()
+            }
+            if (removed) success = true
         }
-        if (removed) {
-            spawners[spawnerPos] = spawnerData.copy(selectedPokemon = updatedPokemonList)
-            config.spawners.find { it.spawnerPos == spawnerPos }?.selectedPokemon = updatedPokemonList
-            saveSpawnerData()
-            return true
-        }
-        return false
+        return success
     }
 
     fun removeAndSaveSpawner(spawnerPos: BlockPos): Boolean {
-        val removed = spawners.remove(spawnerPos) != null
-        if (removed) {
-            config.spawners.removeIf { it.spawnerPos == spawnerPos }
-            lastSpawnTicks.remove(spawnerPos)
-            saveSpawnerData()
-            return true
-        }
-        return false
-    }
-
-    fun saveConfigBlocking() {
-        runBlocking {
-            configManager.saveConfig(configManager.getCurrentConfig())
-        }
+        return removeSpawner(spawnerPos)
     }
 
     fun createDefaultSpawner(spawnerPos: BlockPos, dimension: String, spawnerName: String): SpawnerData {
         val spawnerData = SpawnerData(
             spawnerPos = spawnerPos,
             spawnerName = spawnerName,
-            selectedPokemon = mutableListOf(),
-            dimension = dimension,
-            spawnTimerTicks = 200,
-            spawnRadius = SpawnRadius(4, 4),
-            spawnLimit = 4,
-            spawnAmountPerSpawn = 1,
-            visible = true,
-            wanderingSettings = WanderingSettings(),
-            forceChunkLoading = true,
-            chunkLoadRadius = 1,
-            requirePlayerInRange = true,
-            playerActivationRange = 30
+            dimension = dimension
         )
         spawners[spawnerPos] = spawnerData
-        config.spawners.add(spawnerData)
-        saveSpawnerData()
-        saveConfigBlocking()
         return spawnerData
     }
 
@@ -512,5 +640,9 @@ object CobbleSpawnersConfig {
         }
         movesByLevel.sortBy { it.level }
         return movesByLevel
+    }
+
+    private fun roundToOneDecimal(value: Float): Float {
+        return (value * 10).roundToInt() / 10f
     }
 }
