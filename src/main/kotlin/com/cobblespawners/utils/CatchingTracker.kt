@@ -69,7 +69,6 @@ class CatchingTracker {
                 val formName = pokemonEntity.pokemon.form.name.let { if (it.equals("Standard", ignoreCase = true)) "Normal" else it }
                 val pokemonAspects = pokemonEntity.pokemon.aspects.toSet()
 
-
                 val defaultGenderAspects = setOf("male", "female", "genderless")
 
                 val pokemonSpawnEntry = spawnerData.selectedPokemon.find { entry ->
@@ -86,10 +85,9 @@ class CatchingTracker {
 
                 if (pokemonSpawnEntry != null) {
                     val captureSettings = pokemonSpawnEntry.captureSettings
-
                     var blockCapture = false
-                    var forceSuccess = false
 
+                    // Logic to decide if we should BLOCK the capture
                     if (!captureSettings.isCatchable) {
                         thrower.sendMessage(Text.literal("This Pokémon cannot be captured!").formatted(Formatting.RED), false)
                         blockCapture = true
@@ -102,17 +100,11 @@ class CatchingTracker {
                                 val allowedBallsDisplay = allowedPokeBalls.joinToString { it.substringAfter(":") }
                                 thrower.sendMessage(Text.literal("Only specific Poké Balls work! Allowed: $allowedBallsDisplay").formatted(Formatting.RED), false)
                                 blockCapture = true
-                            } else {
-
-                                forceSuccess = true
                             }
-                        } else {
-
-                            forceSuccess = true
                         }
                     }
 
-
+                    // Apply the block if necessary
                     if (blockCapture) {
                         event.captureResult = CaptureContext(
                             numberOfShakes = 0,
@@ -121,13 +113,8 @@ class CatchingTracker {
                         )
                         val queue = playerTrackingMap.computeIfAbsent(thrower) { ConcurrentLinkedQueue() }
                         queue.add(PokeballTrackingInfo(pokeBallEntity.uuid, pokeBallEntity))
-                    } else if (forceSuccess) {
-                        event.captureResult = CaptureContext(
-                            numberOfShakes = 4,
-                            isSuccessfulCapture = true,
-                            isCriticalCapture = false
-                        )
                     }
+
                 }
             }
         }

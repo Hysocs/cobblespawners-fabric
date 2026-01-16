@@ -17,7 +17,6 @@ import org.slf4j.LoggerFactory
 import java.io.File
 import java.io.StringReader
 import java.nio.file.Paths
-
 import java.util.concurrent.ConcurrentHashMap
 import java.util.function.Predicate
 import kotlin.math.roundToInt
@@ -35,7 +34,7 @@ data class GlobalConfig(
 )
 
 data class CobbleSpawnersConfigData(
-    override val version: String = "2.1.1",
+    override val version: String = "2.1.5",
     override val configId: String = "cobblespawners",
     var globalConfig: GlobalConfig = GlobalConfig()
 ) : ConfigData {
@@ -96,7 +95,7 @@ private object SpawnerListProxy : AbstractMutableList<SpawnerData>() {
 }
 
 data class SpawnerData(
-    override val version: String = "2.1.1",
+    override val version: String = "2.1.5",
     override val configId: String = "cobblespawners",
     val spawnerPos: BlockPos = BlockPos.ORIGIN,
     var spawnerName: String = "default_spawner",
@@ -186,7 +185,7 @@ data class WanderingSettings(var enabled: Boolean = true, var wanderType: String
 
 object CobbleSpawnersConfig {
     private val logger = LoggerFactory.getLogger("CobbleSpawnersConfig")
-    private const val CURRENT_VERSION = "2.1.1"
+    private const val CURRENT_VERSION = "2.1.5"
     private const val MOD_ID = "cobblespawners"
 
     private val mainConfigDir = File("config/cobblespawners")
@@ -281,7 +280,6 @@ object CobbleSpawnersConfig {
 
         try {
             val content = configFile.readText()
-            // First, check if migration is needed before doing anything else.
             if (!content.contains("\"spawners\"")) {
                 return
             }
@@ -326,7 +324,6 @@ object CobbleSpawnersConfig {
                         }
                     }
 
-                    // SAFETY: Only modify the main config if ALL spawners migrated successfully
                     if (allSuccess) {
                         jsonObject.remove("spawners")
                         val mainOutput = gson.toJson(jsonObject)
@@ -338,7 +335,6 @@ object CobbleSpawnersConfig {
                         logger.warn("Please check config.jsonc.backup and the logs.")
                     }
                 } else {
-                    // If the spawners array is empty, just remove it from the config.
                     jsonObject.remove("spawners")
                     val mainOutput = gson.toJson(jsonObject)
                     configFile.writeText(mainOutput)
@@ -391,12 +387,23 @@ object CobbleSpawnersConfig {
         }
     }
 
+    private fun saveSpecificSpawner(pos: BlockPos) {
+        val fileName = spawnerFileMap[pos] ?: return
+        val data = spawners[pos] ?: return
+        runBlocking {
+            configManager.saveSecondaryConfig(fileName, data)
+        }
+    }
+
     private fun getFileNameForPos(pos: BlockPos): String {
         return "spawners/spawner_${pos.x}_${pos.y}_${pos.z}.jsonc"
     }
 
     private fun removeSpawnerFile(pos: BlockPos): Boolean {
         val fileName = spawnerFileMap.remove(pos) ?: return false
+
+        configManager.unregisterConfig(fileName)
+
         val file = File(mainConfigDir, fileName)
         if (file.exists()) {
             file.delete()
@@ -460,6 +467,8 @@ object CobbleSpawnersConfig {
             dimension = dimension
         )
         spawners[spawnerPos] = spawnerData
+        registerOrUpdateSpawner(spawnerPos, spawnerData)
+        saveSpecificSpawner(spawnerPos)
         return true
     }
 
@@ -479,6 +488,7 @@ object CobbleSpawnersConfig {
     fun updateSpawner(spawnerPos: BlockPos, update: (SpawnerData) -> Unit): SpawnerData? {
         val spawnerData = spawners[spawnerPos] ?: return null
         update(spawnerData)
+        saveSpecificSpawner(spawnerPos)
         return spawnerData
     }
 
@@ -596,6 +606,8 @@ object CobbleSpawnersConfig {
             dimension = dimension
         )
         spawners[spawnerPos] = spawnerData
+        registerOrUpdateSpawner(spawnerPos, spawnerData)
+        saveSpecificSpawner(spawnerPos)
         return spawnerData
     }
 

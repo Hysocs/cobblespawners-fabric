@@ -50,7 +50,6 @@ object CobbleSpawners : ModInitializer {
 
     val spawnerValidPositions = ConcurrentHashMap<BlockPos, Map<String, List<BlockPos>>>()
     val SPAWNER_TICKET_TYPE: ChunkTicketType<BlockPos> = ChunkTicketType.create("cobblespawners:spawner_ticket", Comparator.comparingLong(BlockPos::asLong))
-    private var spawnScheduler: ScheduledExecutorService? = null
 
     override fun onInitialize() {
         if (!checkDependencies()) {
@@ -68,8 +67,26 @@ object CobbleSpawners : ModInitializer {
 
         registerServerLifecycleEvents()
 
+        // Add SERVER_STARTING to reset scheduler
+        ServerLifecycleEvents.SERVER_STARTING.register { server ->
+            logger.info("Server starting - resetting scheduler state")
+            SchedulerManager.onServerStarting(server)
+        }
+
         ServerLifecycleEvents.SERVER_STARTED.register { server ->
-            registerSpawnScheduler(server)
+            logger.info("Server started - starting spawn scheduler")
+
+            // Use SchedulerManager instead of custom executor
+            SchedulerManager.scheduleAtFixedRate(
+                "cobblespawners-main-loop",
+                server,
+                0,
+                1,
+                TimeUnit.SECONDS
+            ) {
+                processSpawnerSpawns(server)
+            }
+
             battleTracker.startCleanupScheduler(server)
 
             logDebug("Applying chunk tickets for spawners with forceChunkLoading enabled...", "cobblespawners")
@@ -83,6 +100,11 @@ object CobbleSpawners : ModInitializer {
                 }
             }
             logDebug("Finished applying chunk tickets.", "cobblespawners")
+        }
+
+        ServerLifecycleEvents.SERVER_STOPPING.register { server ->
+            logDebug("Server is stopping. Shutting down scheduler...", "cobblespawners")
+            SchedulerManager.shutdown("cobblespawners-main-loop")
         }
 
         ServerEntityEvents.ENTITY_LOAD.register { entity, world ->
@@ -120,16 +142,13 @@ object CobbleSpawners : ModInitializer {
                 }
             }
 
-            spawnScheduler?.shutdownNow()
-            spawnScheduler = null
-
-            SchedulerManager.shutdownAll()
         }
+
     }
 
     private fun checkDependencies(): Boolean {
         val modId = "everlastingutils"
-        val requiredVersionStr = "1.1.1"
+        val requiredVersionStr = "1.1.4"
 
         val modContainerOpt = FabricLoader.getInstance().getModContainer(modId)
 
@@ -173,15 +192,6 @@ object CobbleSpawners : ModInitializer {
                 logDebug("Despawned Pokémon with UUID $uuid from spawner at $spawnerPos", "cobblespawners")
             }
         }
-    }
-
-    private fun registerSpawnScheduler(server: MinecraftServer) {
-        spawnScheduler = Executors.newSingleThreadScheduledExecutor()
-        spawnScheduler?.scheduleAtFixedRate({
-            server.executeSync {
-                processSpawnerSpawns(server)
-            }
-        }, 0, 1000, TimeUnit.MILLISECONDS)
     }
 
     /**

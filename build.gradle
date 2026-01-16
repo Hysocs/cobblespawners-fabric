@@ -98,7 +98,7 @@ dependencies {
 	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
 	modImplementation "net.fabricmc:fabric-language-kotlin:${project.fabric_kotlin_version}"
 
-	modCompileOnly(files("libs/everlastingutils-1.1.1.jar"))
+	modCompileOnly(files("libs/everlastingutils-1.1.5.jar"))
 
 }
 

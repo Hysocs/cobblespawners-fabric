@@ -458,12 +458,6 @@ object CommandRegistrar {
         cmdManager.register()
     }
 
-
-    /**
-     * Basic argument splitter: This reads the entire command string from Brigadier, splits by space,
-     * and returns a list of tokens. e.g. "/cobblespawners rename oldName newName" -> ["cobblespawners", "rename", "oldName", "newName"]
-     * We use indexes carefully to fetch subcommand arguments.
-     */
     private fun getArgs(context: CommandContext<ServerCommandSource>): List<String> {
         return context.input.trim().split("\\s+".toRegex())
     }
@@ -501,7 +495,6 @@ object CommandRegistrar {
             species.standardForm
         }
 
-
         val propertiesString = buildString {
             append(pokemonName)
             append(" level=5")
@@ -514,7 +507,6 @@ object CommandRegistrar {
         val serverWorld = player.serverWorld
         val pokemonEntity = properties.createEntity(serverWorld)
         val pokemon = pokemonEntity.pokemon
-
 
         if (moves.isNotEmpty()) {
             for (i in 0..3) {
@@ -530,7 +522,6 @@ object CommandRegistrar {
                 }
             }
         }
-
 
         val spawnPos = player.blockPos
         pokemonEntity.refreshPositionAndAngles(
@@ -611,8 +602,11 @@ object CommandRegistrar {
             sendError(ctx, "Spawner name '$newName' is already in use.")
             return 0
         }
-        spawnerEntry.spawnerName = newName
-        CobbleSpawnersConfig.saveSpawnerData()
+
+        CobbleSpawnersConfig.updateSpawner(spawnerEntry.spawnerPos) {
+            it.spawnerName = newName
+        }
+
         sendSuccess(ctx, "Spawner renamed from '$currentName' to '$newName'.")
         return 1
     }
@@ -684,8 +678,6 @@ object CommandRegistrar {
         )
 
         if (CobbleSpawnersConfig.addPokemonSpawnEntry(spawnerEntry.spawnerPos, newEntry)) {
-
-            CobbleSpawnersConfig.reloadBlocking()
             sendSuccess(ctx, "Added Pokémon '$pokemonName' (form '$selectedForm') to spawner '$spawnerName'.")
             return 1
         } else {
@@ -693,7 +685,6 @@ object CommandRegistrar {
             return 0
         }
     }
-
 
     private fun handleRemoveMonCommand(ctx: CommandContext<ServerCommandSource>): Int {
         val args = getArgs(ctx)
@@ -923,22 +914,24 @@ object CommandRegistrarUtil {
     private val logger = LoggerFactory.getLogger("CobbleSpawners-CmdUtil")
 
     fun toggleSpawnerVisibility(server: net.minecraft.server.MinecraftServer, spawnerPos: net.minecraft.util.math.BlockPos): Boolean {
-        val spawnerData = CobbleSpawnersConfig.getSpawner(spawnerPos)
-            ?: run {
-                logger.error("No spawner found at $spawnerPos.")
-                return false
-            }
-        spawnerData.visible = !spawnerData.visible
-        val dimensionKey = CobbleSpawners.parseDimension(spawnerData.dimension)
+        val updated = CobbleSpawnersConfig.updateSpawner(spawnerPos) { data ->
+            data.visible = !data.visible
+        }
+
+        if (updated == null) {
+            logger.error("No spawner found at $spawnerPos.")
+            return false
+        }
+
+        val dimensionKey = CobbleSpawners.parseDimension(updated.dimension)
         val world = server.getWorld(dimensionKey) ?: return false
 
         return try {
-            if (spawnerData.visible) {
+            if (updated.visible) {
                 world.setBlockState(spawnerPos, net.minecraft.block.Blocks.SPAWNER.defaultState)
             } else {
                 world.setBlockState(spawnerPos, net.minecraft.block.Blocks.AIR.defaultState)
             }
-            CobbleSpawnersConfig.saveSpawnerData()
             true
         } catch (e: Exception) {
             logger.error("Error toggling spawner at $spawnerPos: ${e.message}")
