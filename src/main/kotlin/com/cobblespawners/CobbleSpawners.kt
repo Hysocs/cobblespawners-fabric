@@ -87,6 +87,22 @@ object CobbleSpawners : ModInitializer {
                 processSpawnerSpawns(server)
             }
 
+            SchedulerManager.scheduleAtFixedRate(
+                "cobblespawners-particle-loop",
+                server,
+                0,
+                500,
+                TimeUnit.MILLISECONDS
+            ) {
+                ParticleUtils.activeVisualizations.entries.removeIf { (uuid, pair) ->
+                    val player = server.playerManager.getPlayer(uuid) ?: return@removeIf true
+                    val spawnerPos = pair.first
+                    val spawnerData = CobbleSpawnersConfig.spawners[spawnerPos] ?: return@removeIf true
+                    ParticleUtils.visualizeSpawnerPositions(player, spawnerData)
+                    false
+                }
+            }
+
             battleTracker.startCleanupScheduler(server)
 
             logDebug("Applying chunk tickets for spawners with forceChunkLoading enabled...", "cobblespawners")
@@ -105,6 +121,7 @@ object CobbleSpawners : ModInitializer {
         ServerLifecycleEvents.SERVER_STOPPING.register { server ->
             logDebug("Server is stopping. Shutting down scheduler...", "cobblespawners")
             SchedulerManager.shutdown("cobblespawners-main-loop")
+            SchedulerManager.shutdown("cobblespawners-particle-loop")
         }
 
         ServerEntityEvents.ENTITY_LOAD.register { entity, world ->
@@ -283,8 +300,9 @@ object CobbleSpawners : ModInitializer {
     }
 
     private fun spawnPokemon(serverWorld: ServerWorld, spawnerData: SpawnerData) {
-        val spawnerPos = spawnerData.spawnerPos
-        // FIX: Use live scan check here as well
+        // Convert once here — everything downstream expects BlockPos
+        val spawnerPos = spawnerData.spawnerPos.toBlockPos()
+
         val currentSpawned = getActualPokemonCount(serverWorld, spawnerPos, spawnerData)
 
         if (currentSpawned >= spawnerData.spawnLimit) {

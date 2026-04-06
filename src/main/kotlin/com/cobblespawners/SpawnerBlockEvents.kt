@@ -28,15 +28,14 @@ import java.util.zip.GZIPOutputStream
 
 object SpawnerBlockEvents {
     private val logger = LoggerFactory.getLogger("cobblespawners")
+
     fun registerEvents() {
         registerUseBlockCallback()
         registerBlockBreakCallback()
     }
 
-
     private fun hasPermission(player: ServerPlayerEntity, permission: String, requiredLevel: Int): Boolean {
-        val source = player.commandSource
-        return CommandManager.hasPermissionOrOp(source, permission, requiredLevel, requiredLevel)
+        return CommandManager.hasPermissionOrOp(player.commandSource, permission, requiredLevel, requiredLevel)
     }
 
     private fun registerUseBlockCallback() {
@@ -82,7 +81,6 @@ object SpawnerBlockEvents {
         }
     }
 
-    /** Generates the next available spawner name in the sequence "spawner_<number>". */
     private fun getNextSpawnerName(): String {
         val existingNumbers = CobbleSpawnersConfig.spawners.values
             .map { it.spawnerName }
@@ -103,18 +101,15 @@ object SpawnerBlockEvents {
         pos: BlockPos,
         itemInHand: ItemStack
     ) {
-
         if (!hasPermission(player, "CobbleSpawners.Place", 2)) {
             player.sendMessage(Text.literal("You don't have permission to place a custom spawner."), false)
             return
         }
 
-
         if (CobbleSpawnersConfig.spawners.containsKey(pos)) {
             player.sendMessage(Text.literal("A spawner already exists at this location!"), false)
             return
         }
-
 
         val blockState = world.getBlockState(pos)
         if (blockState.block == Blocks.WATER || blockState.block == Blocks.LAVA) {
@@ -122,33 +117,26 @@ object SpawnerBlockEvents {
         }
         world.setBlockState(pos, Blocks.SPAWNER.defaultState)
 
-
         val dimensionString = "${world.registryKey.value.namespace}:${world.registryKey.value.path}"
         val gson = com.google.gson.Gson()
-
-
         val spawnerName = getNextSpawnerName()
-
 
         val nbtComponent = itemInHand.get(DataComponentTypes.CUSTOM_DATA)
         val spawnerData: SpawnerData = if (nbtComponent != null) {
             val nbt = nbtComponent.getNbt()
             var configJson: String? = null
 
-
             if (nbt.contains("CobbleSpawnerConfigCompressed")) {
                 val compressedData = nbt.getByteArray("CobbleSpawnerConfigCompressed")
                 try {
-                    val inputStream = ByteArrayInputStream(compressedData)
-                    configJson = GZIPInputStream(inputStream).bufferedReader().use { it.readText() }
+                    configJson = GZIPInputStream(ByteArrayInputStream(compressedData))
+                        .bufferedReader()
+                        .use { it.readText() }
                 } catch (e: Exception) {
                     logger.error("Failed to decompress spawner config from item!", e)
                     player.sendMessage(Text.literal("§cError: Could not read compressed spawner data."), false)
-
                 }
-            }
-
-            else if (nbt.contains("CobbleSpawnerConfig")) {
+            } else if (nbt.contains("CobbleSpawnerConfig")) {
                 configJson = nbt.getString("CobbleSpawnerConfig")
             }
 
@@ -160,31 +148,28 @@ object SpawnerBlockEvents {
                     player.sendMessage(Text.literal("§cError: Could not parse spawner JSON data."), false)
                     null
                 }
-            } else {
-                null
-            }
+            } else null
 
+            // spawnerPos is now SerializableBlockPos — wrap pos correctly
             loadedData?.copy(
-                spawnerPos = pos,
+                spawnerPos = SerializableBlockPos.fromBlockPos(pos),
                 spawnerName = spawnerName,
                 dimension = dimensionString
+            ) ?: SpawnerData(
+                spawnerPos = SerializableBlockPos.fromBlockPos(pos),
+                spawnerName = spawnerName,
+                selectedPokemon = mutableListOf(),
+                dimension = dimensionString,
+                spawnTimerTicks = 200,
+                spawnRadius = SpawnRadius(width = 4, height = 4),
+                spawnLimit = 4,
+                spawnAmountPerSpawn = 1,
+                visible = true,
+                wanderingSettings = WanderingSettings()
             )
-                ?: SpawnerData(
-                    spawnerPos = pos,
-                    spawnerName = spawnerName,
-                    selectedPokemon = mutableListOf(),
-                    dimension = dimensionString,
-                    spawnTimerTicks = 200,
-                    spawnRadius = SpawnRadius(width = 4, height = 4),
-                    spawnLimit = 4,
-                    spawnAmountPerSpawn = 1,
-                    visible = true,
-                    wanderingSettings = WanderingSettings()
-                )
         } else {
-
             SpawnerData(
-                spawnerPos = pos,
+                spawnerPos = SerializableBlockPos.fromBlockPos(pos),
                 spawnerName = spawnerName,
                 selectedPokemon = mutableListOf(),
                 dimension = dimensionString,
@@ -202,12 +187,12 @@ object SpawnerBlockEvents {
         CobbleSpawnersConfig.saveSpawnerData()
         CobbleSpawnersConfig.saveConfigBlocking()
 
-        if (spawnerData.forceChunkLoading) {
-            if (world is ServerWorld) {
-                val chunkPos = ChunkPos(pos)
-                world.chunkManager.addTicket(CobbleSpawners.SPAWNER_TICKET_TYPE, chunkPos, spawnerData.chunkLoadRadius, pos)
-                logDebug("Added chunk ticket for spawner '${spawnerData.spawnerName}' at $pos", "cobblespawners")
-            }
+        if (spawnerData.forceChunkLoading && world is ServerWorld) {
+            val chunkPos = ChunkPos(pos)
+            world.chunkManager.addTicket(
+                CobbleSpawners.SPAWNER_TICKET_TYPE, chunkPos, spawnerData.chunkLoadRadius, pos
+            )
+            logDebug("Added chunk ticket for spawner '${spawnerData.spawnerName}' at $pos", "cobblespawners")
         }
 
         player.sendMessage(Text.literal("Custom spawner '${spawnerData.spawnerName}' placed at $pos!"), false)
@@ -230,15 +215,20 @@ object SpawnerBlockEvents {
                     serverPlayer.sendMessage(Text.literal("You don't have permission to remove this spawner."), false)
                     return@register false
                 }
+
                 if (spawnerData != null && spawnerData.forceChunkLoading) {
                     val chunkPos = ChunkPos(blockPos)
-                    world.chunkManager.removeTicket(CobbleSpawners.SPAWNER_TICKET_TYPE, chunkPos, spawnerData.chunkLoadRadius, blockPos)
+                    world.chunkManager.removeTicket(
+                        CobbleSpawners.SPAWNER_TICKET_TYPE, chunkPos, spawnerData.chunkLoadRadius, blockPos
+                    )
                     logDebug("Removed chunk ticket for spawner '${spawnerData.spawnerName}' at $blockPos", "cobblespawners")
                 }
 
-
                 CobbleSpawnersConfig.spawners.remove(blockPos)
-                CobbleSpawnersConfig.config.spawners.removeIf { it.spawnerPos == blockPos }
+                // spawnerPos is now SerializableBlockPos — compare via toBlockPos()
+                CobbleSpawnersConfig.config.spawners.removeIf {
+                    it.spawnerPos.toBlockPos() == blockPos
+                }
                 CobbleSpawnersConfig.saveSpawnerData()
                 CobbleSpawnersConfig.saveConfigBlocking()
 
@@ -255,14 +245,12 @@ object SpawnerBlockEvents {
 
     private fun invalidatePositionsIfWithinRadius(world: ServerWorld, changedBlockPos: BlockPos) {
         for ((pos, data) in CobbleSpawnersConfig.spawners) {
-            val spawnRadius = data.spawnRadius
-            if (spawnRadius != null) {
-                val distanceSquared = pos.getSquaredDistance(changedBlockPos)
-                val maxDistanceSquared = (spawnRadius.width * spawnRadius.width).toDouble()
-                if (distanceSquared <= maxDistanceSquared) {
-                    CobbleSpawners.spawnerValidPositions.remove(pos)
-                    logDebug("Invalidated cached positions for spawner at $pos due to block change @ $changedBlockPos", "cobblespawners")
-                }
+            val spawnRadius = data.spawnRadius ?: continue
+            val distanceSquared = pos.getSquaredDistance(changedBlockPos)
+            val maxDistanceSquared = (spawnRadius.width * spawnRadius.width).toDouble()
+            if (distanceSquared <= maxDistanceSquared) {
+                CobbleSpawners.spawnerValidPositions.remove(pos)
+                logDebug("Invalidated cached positions for spawner at $pos due to block change @ $changedBlockPos", "cobblespawners")
             }
         }
     }

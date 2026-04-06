@@ -91,7 +91,7 @@ dependencies {
 	mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
 	modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
 	//modImplementation files('libs/Cobblemon-fabric-1.7.0+1.21.1-main-488f38c.jar')
-    modImplementation("com.cobblemon:fabric:1.7.1+1.21.1")
+    modImplementation("com.cobblemon:fabric:1.7.3+1.21.1")
 	//modImplementation "com.cobblemon:fabric:1.6.1+1.21.1"
 
 	// Fabric API. This is technically optional, but you probably want it anyway.

@@ -562,7 +562,8 @@ object CommandRegistrar {
             setCustomName(Text.literal("Copied Spawner: $spawnerName"))
 
             val gson = com.google.gson.Gson()
-            val spawnerJson = gson.toJson(spawnerData.copy(spawnerPos = BlockPos(0, 0, 0)))
+            // Use SerializableBlockPos(0,0,0) instead of BlockPos(0,0,0)
+            val spawnerJson = gson.toJson(spawnerData.copy(spawnerPos = SerializableBlockPos(0, 0, 0)))
             val nbt = NbtCompound()
 
             val outputStream = ByteArrayOutputStream()
@@ -570,19 +571,18 @@ object CommandRegistrar {
             val compressedData = outputStream.toByteArray()
 
             nbt.putByteArray("CobbleSpawnerConfigCompressed", compressedData)
-
-            val nbtComponent = NbtComponent.of(nbt)
-            set(DataComponentTypes.CUSTOM_DATA, nbtComponent)
+            set(DataComponentTypes.CUSTOM_DATA, NbtComponent.of(nbt))
         }
 
-        if (player.inventory.insertStack(spawnerItem)) {
+        return if (player.inventory.insertStack(spawnerItem)) {
             sendSuccess(ctx, "A copy of spawner '$spawnerName' has been added to your inventory.")
-            return 1
+            1
         } else {
             sendError(ctx, "Inventory full. Could not add the spawner copy.")
-            return 0
+            0
         }
     }
+
 
     private fun handleRenameCommand(ctx: CommandContext<ServerCommandSource>): Int {
         val args = getArgs(ctx)
@@ -603,7 +603,8 @@ object CommandRegistrar {
             return 0
         }
 
-        CobbleSpawnersConfig.updateSpawner(spawnerEntry.spawnerPos) {
+        // Convert to BlockPos for the config call
+        CobbleSpawnersConfig.updateSpawner(spawnerEntry.spawnerPos.toBlockPos()) {
             it.spawnerName = newName
         }
 
@@ -618,9 +619,7 @@ object CommandRegistrar {
             return 0
         }
         val spawnerName = args[2]
-
         val pokemonName = args[3].replaceFirstChar { it.uppercase() }
-
         val formName = if (args.size >= 5) args[4].replaceFirstChar { it.uppercase() } else ""
 
         val spawnerEntry = CobbleSpawnersConfig.spawners.values.find { it.spawnerName == spawnerName }
@@ -677,12 +676,13 @@ object CommandRegistrar {
             )
         )
 
-        if (CobbleSpawnersConfig.addPokemonSpawnEntry(spawnerEntry.spawnerPos, newEntry)) {
+        // Convert to BlockPos for the config call
+        return if (CobbleSpawnersConfig.addPokemonSpawnEntry(spawnerEntry.spawnerPos.toBlockPos(), newEntry)) {
             sendSuccess(ctx, "Added Pokémon '$pokemonName' (form '$selectedForm') to spawner '$spawnerName'.")
-            return 1
+            1
         } else {
             sendError(ctx, "Failed to add Pokémon '$pokemonName' to spawner '$spawnerName'.")
-            return 0
+            0
         }
     }
 
@@ -703,7 +703,8 @@ object CommandRegistrar {
             return 0
         }
 
-        val success = CobbleSpawnersConfig.removePokemonSpawnEntry(spawnerEntry.spawnerPos, pokemonName, formName)
+        // Convert to BlockPos for the config call
+        val success = CobbleSpawnersConfig.removePokemonSpawnEntry(spawnerEntry.spawnerPos.toBlockPos(), pokemonName, formName)
         return if (success) {
             sendSuccess(ctx, "Removed Pokémon '$pokemonName' (form '${formName ?: "any"}') from spawner '$spawnerName'.")
             1
@@ -722,7 +723,8 @@ object CommandRegistrar {
             return 0
         }
 
-        val spawnerPos = spawnerEntry.spawnerPos
+        // Convert to BlockPos for NBT manager
+        val spawnerPos = spawnerEntry.spawnerPos.toBlockPos()
         val server = ctx.source.server
         val worldKey = CobbleSpawners.parseDimension(spawnerEntry.dimension)
         val serverWorld = server.getWorld(worldKey)
@@ -747,7 +749,8 @@ object CommandRegistrar {
             return 0
         }
 
-        val success = CommandRegistrarUtil.toggleSpawnerVisibility(ctx.source.server, spawnerData.spawnerPos)
+        // Convert to BlockPos for the util call
+        val success = CommandRegistrarUtil.toggleSpawnerVisibility(ctx.source.server, spawnerData.spawnerPos.toBlockPos())
         if (success) {
             sendSuccess(ctx, "Visibility for spawner '$spawnerName' toggled to ${if (spawnerData.visible) "visible" else "invisible"}.")
             return 1
@@ -783,6 +786,7 @@ object CommandRegistrar {
         val spawnerName = args[2]
         val spawnerData = CobbleSpawnersConfig.spawners.values.find { it.spawnerName.equals(spawnerName, ignoreCase = true) }
         val player = ctx.source.player as? ServerPlayerEntity
+
         if (spawnerData == null) {
             sendError(ctx, "Spawner '$spawnerName' not found.")
             return 0
@@ -791,12 +795,16 @@ object CommandRegistrar {
             sendError(ctx, "Only players can use /cobblespawners teleport.")
             return 0
         }
+
         val worldKey = CobbleSpawners.parseDimension(spawnerData.dimension)
         val world = ctx.source.server.getWorld(worldKey)
         if (world == null) {
             sendError(ctx, "Dimension '${spawnerData.dimension}' not found.")
             return 0
         }
+
+        // SerializableBlockPos has x/y/z directly so no conversion needed for coordinate access,
+        // but toBlockPos() keeps it consistent and safe
         val pos = spawnerData.spawnerPos
         player.teleport(world, pos.x + 0.5, pos.y + 0.0, pos.z + 0.5, player.yaw, player.pitch)
         sendSuccess(ctx, "Teleported to spawner '$spawnerName'.")
@@ -837,7 +845,8 @@ object CommandRegistrar {
             return 0
         }
 
-        SpawnerPokemonSelectionGui.openSpawnerGui(player, spawnerData.spawnerPos)
+        // Convert to BlockPos for the GUI call
+        SpawnerPokemonSelectionGui.openSpawnerGui(player, spawnerData.spawnerPos.toBlockPos())
         sendSuccess(ctx, "Opened spawner GUI for '$spawnerName'.")
         return 1
     }

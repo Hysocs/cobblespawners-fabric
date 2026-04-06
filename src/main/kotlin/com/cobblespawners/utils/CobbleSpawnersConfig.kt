@@ -9,13 +9,14 @@ import com.everlastingutils.config.WatcherSettings
 import com.everlastingutils.utils.LogDebug
 import com.google.gson.Gson
 import com.google.gson.GsonBuilder
-import com.google.gson.JsonParser
+import com.google.gson.TypeAdapter
 import com.google.gson.stream.JsonReader
+import com.google.gson.stream.JsonToken
+import com.google.gson.stream.JsonWriter
 import kotlinx.coroutines.runBlocking
 import net.minecraft.util.math.BlockPos
 import org.slf4j.LoggerFactory
 import java.io.File
-import java.io.StringReader
 import java.nio.file.Paths
 import java.util.concurrent.ConcurrentHashMap
 import java.util.function.Predicate
@@ -24,6 +25,16 @@ import kotlin.reflect.KClass
 import kotlin.reflect.KMutableProperty
 import kotlin.reflect.full.createInstance
 import kotlin.reflect.full.memberProperties
+
+// --- Plain data class: Gson reflects on x/y/z Int fields directly.
+// No obfuscation possible because this is our own class, not a Minecraft internal.
+data class SerializableBlockPos(val x: Int = 0, val y: Int = 0, val z: Int = 0) {
+    fun toBlockPos(): BlockPos = BlockPos(x, y, z)
+
+    companion object {
+        fun fromBlockPos(pos: BlockPos) = SerializableBlockPos(pos.x, pos.y, pos.z)
+    }
+}
 
 data class GlobalConfig(
     var debugEnabled: Boolean = false,
@@ -34,7 +45,7 @@ data class GlobalConfig(
 )
 
 data class CobbleSpawnersConfigData(
-    override val version: String = "2.1.5",
+    override val version: String = "2.1.7",
     override val configId: String = "cobblespawners",
     var globalConfig: GlobalConfig = GlobalConfig()
 ) : ConfigData {
@@ -48,7 +59,7 @@ private object SpawnerListProxy : AbstractMutableList<SpawnerData>() {
     override fun get(index: Int): SpawnerData = CobbleSpawnersConfig.spawners.values.elementAt(index)
 
     override fun add(element: SpawnerData): Boolean {
-        CobbleSpawnersConfig.spawners[element.spawnerPos] = element
+        CobbleSpawnersConfig.spawners[element.spawnerPos.toBlockPos()] = element
         return true
     }
 
@@ -58,21 +69,21 @@ private object SpawnerListProxy : AbstractMutableList<SpawnerData>() {
 
     override fun removeAt(index: Int): SpawnerData {
         val item = get(index)
-        CobbleSpawnersConfig.spawners.remove(item.spawnerPos)
+        CobbleSpawnersConfig.spawners.remove(item.spawnerPos.toBlockPos())
         return item
     }
 
     override fun set(index: Int, element: SpawnerData): SpawnerData {
         val old = get(index)
         if (old.spawnerPos != element.spawnerPos) {
-            CobbleSpawnersConfig.spawners.remove(old.spawnerPos)
+            CobbleSpawnersConfig.spawners.remove(old.spawnerPos.toBlockPos())
         }
-        CobbleSpawnersConfig.spawners[element.spawnerPos] = element
+        CobbleSpawnersConfig.spawners[element.spawnerPos.toBlockPos()] = element
         return old
     }
 
     override fun remove(element: SpawnerData): Boolean {
-        return CobbleSpawnersConfig.spawners.remove(element.spawnerPos) != null
+        return CobbleSpawnersConfig.spawners.remove(element.spawnerPos.toBlockPos()) != null
     }
 
     override fun removeIf(filter: Predicate<in SpawnerData>): Boolean {
@@ -95,9 +106,10 @@ private object SpawnerListProxy : AbstractMutableList<SpawnerData>() {
 }
 
 data class SpawnerData(
-    override val version: String = "2.1.5",
+    override val version: String = "2.1.7",
     override val configId: String = "cobblespawners",
-    val spawnerPos: BlockPos = BlockPos.ORIGIN,
+    // SerializableBlockPos instead of BlockPos — Gson writes clean x/y/z always
+    val spawnerPos: SerializableBlockPos = SerializableBlockPos(),
     var spawnerName: String = "default_spawner",
     var selectedPokemon: MutableList<PokemonSpawnEntry> = mutableListOf(),
     val dimension: String = "minecraft:overworld",
@@ -185,7 +197,7 @@ data class WanderingSettings(var enabled: Boolean = true, var wanderType: String
 
 object CobbleSpawnersConfig {
     private val logger = LoggerFactory.getLogger("CobbleSpawnersConfig")
-    private const val CURRENT_VERSION = "2.1.5"
+    private const val CURRENT_VERSION = "2.1.7"
     private const val MOD_ID = "cobblespawners"
 
     private val mainConfigDir = File("config/cobblespawners")
@@ -194,7 +206,15 @@ object CobbleSpawnersConfig {
     private lateinit var configManager: ConfigManager<CobbleSpawnersConfigData>
     private var isInitialized = false
 
-    private val gson: Gson = GsonBuilder().setPrettyPrinting().disableHtmlEscaping().create()
+    // This gson is used ONLY for reading files from disk during loadSpawnersFromDisk,
+    // specifically to handle legacy field_XXXXX keys. ConfigManager uses its own gson
+    // for all saving, which is fine because SerializableBlockPos has plain x/y/z fields.
+    private val gson: Gson = GsonBuilder()
+        .setPrettyPrinting()
+        .disableHtmlEscaping()
+        .registerTypeAdapter(SerializableBlockPos::class.java, SerializableBlockPosAdapter())
+        .create()
+
     private val spawnerFileMap = ConcurrentHashMap<BlockPos, String>()
 
     val lastSpawnTicks: ConcurrentHashMap<BlockPos, Long> = ConcurrentHashMap()
@@ -202,6 +222,7 @@ object CobbleSpawnersConfig {
     val config: CobbleSpawnersConfigData
         get() = if (::configManager.isInitialized) configManager.getCurrentConfig() else CobbleSpawnersConfigData()
 
+    // Runtime map is still keyed by BlockPos for convenience everywhere else in the mod
     val spawners: MutableMap<BlockPos, SpawnerData> = object : java.util.AbstractMap<BlockPos, SpawnerData>() {
         override val entries: MutableSet<MutableMap.MutableEntry<BlockPos, SpawnerData>>
             get() = spawnerFileMap.keys.mapNotNull { pos ->
@@ -274,15 +295,11 @@ object CobbleSpawnersConfig {
 
     private fun performMigrationIfNeeded() {
         val configFile = File(mainConfigDir, "config.jsonc")
-        if (!configFile.exists()) {
-            return
-        }
+        if (!configFile.exists()) return
 
         try {
             val content = configFile.readText()
-            if (!content.contains("\"spawners\"")) {
-                return
-            }
+            if (!content.contains("\"spawners\"")) return
 
             logger.info("Legacy 'spawners' list found. Attempting migration to multi-file format...")
 
@@ -294,51 +311,45 @@ object CobbleSpawnersConfig {
                 return
             }
 
-            val reader = JsonReader(StringReader(content))
-            reader.isLenient = true
-
-            val jsonObject = JsonParser.parseReader(reader).asJsonObject
+            // Use a lenient JsonReader so comments and trailing commas in .jsonc don't crash parsing
+            val lenientReader = com.google.gson.stream.JsonReader(java.io.StringReader(content)).apply {
+                isLenient = true
+            }
+            val jsonObject = com.google.gson.JsonParser.parseReader(lenientReader).asJsonObject
 
             if (jsonObject.has("spawners") && jsonObject.get("spawners").isJsonArray) {
                 val spawnersArray = jsonObject.getAsJsonArray("spawners")
-
                 var allSuccess = true
                 var migratedCount = 0
 
                 if (spawnersArray.size() > 0) {
                     spawnersArray.forEach { element ->
                         try {
-                            val spawnerObj = element.asJsonObject
-                            val data = gson.fromJson(spawnerObj, SpawnerData::class.java)
-                            val fileName = getFileNameForPos(data.spawnerPos)
+                            val data = gson.fromJson(element, SpawnerData::class.java)
+                            val pos = data.spawnerPos.toBlockPos()
+                            val fileName = getFileNameForPos(pos)
                             val file = File(spawnersDir, fileName.substringAfter("spawners/"))
-
                             file.parentFile.mkdirs()
-                            val jsonOutput = gson.toJson(data)
-                            file.writeText(jsonOutput)
-
+                            file.writeText(gson.toJson(data))
                             migratedCount++
                         } catch (e: Exception) {
-                            logger.error("Failed to migrate a specific spawner entry. It will be preserved in config.jsonc", e)
+                            logger.error("Failed to migrate a specific spawner entry.", e)
                             allSuccess = false
                         }
                     }
 
                     if (allSuccess) {
                         jsonObject.remove("spawners")
-                        val mainOutput = gson.toJson(jsonObject)
-                        configFile.writeText(mainOutput)
+                        configFile.writeText(gson.toJson(jsonObject))
                         logger.info("Migration successful. $migratedCount spawners moved to /spawners/ folder.")
                     } else {
-                        logger.warn("Migration completed with ERRORS. $migratedCount succeeded, but some failed.")
+                        logger.warn("Migration completed with errors. $migratedCount succeeded but some failed.")
                         logger.warn("The 'spawners' list was NOT removed from config.jsonc to prevent data loss.")
-                        logger.warn("Please check config.jsonc.backup and the logs.")
                     }
                 } else {
                     jsonObject.remove("spawners")
-                    val mainOutput = gson.toJson(jsonObject)
-                    configFile.writeText(mainOutput)
-                    logger.info("Found an empty legacy 'spawners' list. It has been removed from config.jsonc.")
+                    configFile.writeText(gson.toJson(jsonObject))
+                    logger.info("Found an empty legacy 'spawners' list. Removed from config.jsonc.")
                 }
             }
         } catch (e: Exception) {
@@ -355,20 +366,33 @@ object CobbleSpawnersConfig {
         files.forEach { file ->
             try {
                 val relativeName = "spawners/${file.name}"
+
+                val lenientReader = com.google.gson.stream.JsonReader(file.reader()).apply {
+                    isLenient = true
+                }
+
+                // Explicit type required — fromJson(JsonReader, Class<T>) returns a platform type
+                // that Kotlin can't infer, causing spawnerPos to be unresolvable without it
+                val rawData: SpawnerData = gson.fromJson(lenientReader, SpawnerData::class.java)
+                    ?: return@forEach
+
+                applyDefaultsToSpawner(rawData)
+                val pos = rawData.spawnerPos.toBlockPos()
+                spawnerFileMap[pos] = relativeName
+
                 configManager.registerSecondaryConfig(
                     fileName = relativeName,
                     configClass = SpawnerData::class,
-                    defaultConfig = SpawnerData(),
-                    fileMetadata = ConfigMetadata(watcherSettings = WatcherSettings(enabled = true, autoSaveEnabled = true))
+                    defaultConfig = rawData,
+                    fileMetadata = ConfigMetadata(
+                        watcherSettings = WatcherSettings(enabled = true, autoSaveEnabled = true)
+                    )
                 )
 
-                val loadedData = configManager.getSecondaryConfig<SpawnerData>(relativeName)
-                if (loadedData != null) {
-                    spawnerFileMap[loadedData.spawnerPos] = relativeName
-                    applyDefaultsToSpawner(loadedData)
-                }
+                configManager.saveSecondaryConfig(relativeName, rawData)
+
             } catch (e: Exception) {
-                logger.error("Failed to load spawner file: ${file.name}", e)
+                logger.error("Failed to load or repair spawner file: ${file.name}", e)
             }
         }
     }
@@ -382,7 +406,9 @@ object CobbleSpawnersConfig {
                 fileName = fileName,
                 configClass = SpawnerData::class,
                 defaultConfig = data,
-                fileMetadata = ConfigMetadata(watcherSettings = WatcherSettings(enabled = true, autoSaveEnabled = true))
+                fileMetadata = ConfigMetadata(
+                    watcherSettings = WatcherSettings(enabled = true, autoSaveEnabled = true)
+                )
             )
         }
     }
@@ -401,9 +427,7 @@ object CobbleSpawnersConfig {
 
     private fun removeSpawnerFile(pos: BlockPos): Boolean {
         val fileName = spawnerFileMap.remove(pos) ?: return false
-
         configManager.unregisterConfig(fileName)
-
         val file = File(mainConfigDir, fileName)
         if (file.exists()) {
             file.delete()
@@ -413,8 +437,7 @@ object CobbleSpawnersConfig {
     }
 
     private fun updateDebugState() {
-        val debugEnabled = config.globalConfig.debugEnabled
-        LogDebug.setDebugEnabledForMod(MOD_ID, debugEnabled)
+        LogDebug.setDebugEnabledForMod(MOD_ID, config.globalConfig.debugEnabled)
     }
 
     private fun applyDefaultsToSpawner(spawner: SpawnerData) {
@@ -438,15 +461,11 @@ object CobbleSpawnersConfig {
     }
 
     fun saveSpawnerData() {
-        runBlocking {
-            configManager.saveConfig(config)
-        }
+        runBlocking { configManager.saveConfig(config) }
     }
 
     fun saveConfigBlocking() {
-        runBlocking {
-            configManager.saveConfig(config)
-        }
+        runBlocking { configManager.saveConfig(config) }
     }
 
     fun updateLastSpawnTick(spawnerPos: BlockPos, tick: Long) {
@@ -463,7 +482,7 @@ object CobbleSpawnersConfig {
             return false
         }
         val spawnerData = SpawnerData(
-            spawnerPos = spawnerPos,
+            spawnerPos = SerializableBlockPos.fromBlockPos(spawnerPos),
             dimension = dimension
         )
         spawners[spawnerPos] = spawnerData
@@ -489,6 +508,7 @@ object CobbleSpawnersConfig {
         val spawnerData = spawners[spawnerPos] ?: return null
         update(spawnerData)
         saveSpecificSpawner(spawnerPos)
+        ParticleUtils.invalidateWireframeCache(spawnerPos)
         return spawnerData
     }
 
@@ -601,7 +621,7 @@ object CobbleSpawnersConfig {
 
     fun createDefaultSpawner(spawnerPos: BlockPos, dimension: String, spawnerName: String): SpawnerData {
         val spawnerData = SpawnerData(
-            spawnerPos = spawnerPos,
+            spawnerPos = SerializableBlockPos.fromBlockPos(spawnerPos),
             spawnerName = spawnerName,
             dimension = dimension
         )
@@ -629,7 +649,11 @@ object CobbleSpawnersConfig {
             minLevel = 1,
             maxLevel = 100,
             sizeSettings = SizeSettings(allowCustomSize = false, minSize = 1.0f, maxSize = 1.0f),
-            captureSettings = CaptureSettings(isCatchable = true, restrictCaptureToLimitedBalls = false, requiredPokeBalls = listOf("poke_ball")),
+            captureSettings = CaptureSettings(
+                isCatchable = true,
+                restrictCaptureToLimitedBalls = false,
+                requiredPokeBalls = listOf("poke_ball")
+            ),
             ivSettings = IVSettings(),
             evSettings = EVSettings(),
             spawnSettings = SpawnSettings(),
@@ -656,5 +680,37 @@ object CobbleSpawnersConfig {
 
     private fun roundToOneDecimal(value: Float): Float {
         return (value * 10).roundToInt() / 10f
+    }
+
+    // Handles legacy files that contain obfuscated field_XXXXX keys.
+    // Once a file is loaded and re-saved, it will always have clean x/y/z going forward.
+    private class SerializableBlockPosAdapter : TypeAdapter<SerializableBlockPos>() {
+        override fun write(out: JsonWriter, value: SerializableBlockPos?) {
+            if (value == null) { out.nullValue(); return }
+            out.beginObject()
+            out.name("x").value(value.x)
+            out.name("y").value(value.y)
+            out.name("z").value(value.z)
+            out.endObject()
+        }
+
+        override fun read(reader: JsonReader): SerializableBlockPos {
+            if (reader.peek() == JsonToken.NULL) {
+                reader.nextNull()
+                return SerializableBlockPos()
+            }
+            val map = mutableMapOf<String, Int>()
+            reader.beginObject()
+            while (reader.hasNext()) {
+                val name = reader.nextName()
+                map[name] = reader.nextInt()
+            }
+            reader.endObject()
+            return SerializableBlockPos(
+                x = map["x"] ?: map["field_11175"] ?: map["field_11176"] ?: 0,
+                y = map["y"] ?: map["field_11174"] ?: map["field_11177"] ?: 0,
+                z = map["z"] ?: map["field_11173"] ?: map["field_11178"] ?: 0
+            )
+        }
     }
 }
